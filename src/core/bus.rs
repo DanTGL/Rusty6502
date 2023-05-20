@@ -1,12 +1,12 @@
 
 pub struct Bus {
-    pub(crate) memory: [u8; 0xFFFF],
+    pub(crate) memory: [u8; 0x10000],
 }
 
 impl Bus {
     pub fn new() -> Self {
         Self {
-            memory: [0; 0xFFFF]
+            memory: [0; 0x10000]
         }
     }
 

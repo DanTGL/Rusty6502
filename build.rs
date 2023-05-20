@@ -33,10 +33,10 @@ fn main() {
         fs::write(
             &dest_path,
             format!("
-            pub static Instructions: [Option<Opcode>; 0xFF] = [
+            pub static Instructions: [Option<Opcode>; 0x100] = [
                                 {}
                             ];",
-                            (0..0xFF).map(|idx| {
+                            (0..=0xFF).map(|idx| {
                                 if let Some(opcode) = opcodes.get(&idx) {
                                     opcode
                                 } else {
