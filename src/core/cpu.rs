@@ -8,6 +8,8 @@ const FLAG_ZERO:        u8 = 0b0000_0010;
 const FLAG_OVERFLOW:    u8 = 0b0100_0000;
 const FLAG_NEG:         u8 = 0b1000_0000;
 
+const RESET_VECTOR:     u16 = 0xFFFC;
+
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,10 +90,10 @@ pub enum AddressingMode {
 }
 
 pub struct Cpu {
-    reg_x: u8,
-    reg_y: u8,
+    pub reg_x: u8,
+    pub reg_y: u8,
     pub acc: u8,
-    program_counter: u16,
+    pub program_counter: u16,
     stack_pointer: u8,
     status: u8,
     bus: Bus,
@@ -104,10 +106,29 @@ impl Cpu {
             reg_y: 0,
             acc: 0,
             program_counter: 0,
-            stack_pointer: 0,
+            stack_pointer: 0xFF,
             status: 0,
             bus: Bus::new()
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.reg_x = 0;
+        self.reg_y = 0;
+        self.acc = 0;
+        self.program_counter = self.bus.mem_read_u16(RESET_VECTOR);
+        self.stack_pointer = 0xFF;
+
+    }
+
+    fn push_stack(&mut self, value: u8) {
+        self.bus.memory[0x100 + self.stack_pointer as usize] = value;
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+    }
+
+    fn pull_stack(&mut self) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+        self.bus.memory[0x100 + self.stack_pointer as usize]
     }
 
     fn branch(&mut self, flag: u8, branch_on_set: bool) {
@@ -302,21 +323,34 @@ impl Cpu {
         self.set_flag_value(FLAG_CARRY, carry);
         self.update_zero_and_negative_flags(result);
     }
-    
+
+    fn cmp(&mut self, mode: &AddressingMode, value: u8) {
+        let address = self.get_memory_address(mode);
+        let operand = self.bus.mem_read(address);
+        self.set_flag_value(FLAG_CARRY, value >= operand);
+
+        let result = value.wrapping_sub(operand);
+
+        self.update_zero_and_negative_flags(result);
+    }
+
 
     pub fn load_program(&mut self, code: Vec<u8>) {
         for (idx, byte) in code.iter().enumerate() {
             self.bus.mem_write(idx as u16, *byte);
         }
 
-        self.program_counter = 0;
+        self.reset();
     }
 
-    pub fn run(&mut self) {
+    pub fn run<F>(&mut self, mut callback: F)
+    where F: FnMut(&mut Cpu) {
         
         loop {
+            callback(self);
+
             let opcode = self.bus.mem_read(self.program_counter);
-            let instruction: Opcode = Instructions[opcode as usize].unwrap();
+            let instruction: Opcode = Instructions[opcode as usize].expect(&format!("Unexpected opcode: {}", opcode));
             let mode = instruction.mode;
             let bytes = (instruction.bytes - 1) as u16;
             let instr_type = instruction.instruction_type;
@@ -389,6 +423,27 @@ impl Cpu {
                     self.program_counter += bytes;
                 }
 
+                // region: Comparison instructions
+
+                InstructionType::CMP => {
+                    self.cmp(&mode, self.acc);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::CPX => {
+                    self.cmp(&mode, self.reg_x);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::CPY => {
+                    self.cmp(&mode, self.reg_y);
+                    self.program_counter += bytes;
+                }
+
+                // endregion
+
+
+                // region: Increment & Decrement instructions
                 InstructionType::DEX => {
                     self.reg_x = self.reg_x.wrapping_sub(1);
 
@@ -396,12 +451,173 @@ impl Cpu {
                     self.program_counter += bytes;
                 }
 
-                
+                InstructionType::INX => {
+                    self.reg_x = self.reg_x.wrapping_add(1);
+
+                    self.update_zero_and_negative_flags(self.reg_x);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::DEY => {
+                    self.reg_y = self.reg_y.wrapping_sub(1);
+
+                    self.update_zero_and_negative_flags(self.reg_y);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::INY => {
+                    self.reg_y = self.reg_y.wrapping_add(1);
+
+                    self.update_zero_and_negative_flags(self.reg_y);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::DEC => {
+                    if mode == AddressingMode::Accumulator {
+                        self.acc = self.acc.wrapping_sub(1);
+
+                        self.update_zero_and_negative_flags(self.acc);
+                    } else {
+                        let address = self.get_memory_address(&mode);
+
+                        let value = self.bus.mem_read(address).wrapping_sub(1);
+
+                        self.bus.mem_write(address, value);
+
+                        self.update_zero_and_negative_flags(value);
+                    }
+                    
+                    self.program_counter += bytes;
+                    
+                }
+
+                InstructionType::INC => {
+                    if mode == AddressingMode::Accumulator {
+                        self.acc = self.acc.wrapping_add(1);
+
+                        self.update_zero_and_negative_flags(self.acc);
+                    } else {
+                        let address = self.get_memory_address(&mode);
+
+                        let value = self.bus.mem_read(address).wrapping_add(1);
+
+                        self.bus.mem_write(address, value);
+
+                        self.update_zero_and_negative_flags(value);
+                    }
+                    
+                    self.program_counter += bytes;
+                    
+                }
+
+                // endregion
+
+                // region: Branch instructions
                 InstructionType::BNE => {
                     
                     self.branch(FLAG_ZERO, false);
                     self.program_counter += bytes;
                 }
+                
+                InstructionType::BEQ => {
+                    
+                    self.branch(FLAG_ZERO, true);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BVC => {
+                    
+                    self.branch(FLAG_OVERFLOW, false);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BVS => {
+                    
+                    self.branch(FLAG_OVERFLOW, true);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BCC => {
+                    
+                    self.branch(FLAG_CARRY, false);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BCS => {
+                    
+                    self.branch(FLAG_CARRY, true);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BPL => {
+                    
+                    self.branch(FLAG_NEG, false);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::BMI => {
+                    
+                    self.branch(FLAG_NEG, true);
+                    self.program_counter += bytes;
+                }
+                // endregion
+
+                // region: Register transfer instructions
+
+                InstructionType::TAX => {
+                    self.reg_x = self.acc;
+                    self.update_zero_and_negative_flags(self.reg_x);
+                }
+
+                InstructionType::TAY => {
+                    self.reg_y = self.acc;
+                    self.update_zero_and_negative_flags(self.reg_y)
+                }
+
+                InstructionType::TSX => {
+                    self.reg_x = self.stack_pointer;
+                    self.update_zero_and_negative_flags(self.reg_x);
+                }
+
+                InstructionType::TXA => {
+                    self.acc = self.reg_x;
+                    self.update_zero_and_negative_flags(self.acc);
+                }
+
+                InstructionType::TXS => {
+                    self.stack_pointer = self.reg_x;
+                }
+
+                InstructionType::TYA => {
+                    self.acc = self.reg_y;
+                    self.update_zero_and_negative_flags(self.acc);
+                }
+
+                // endregion
+
+                // region: Stack instructions
+
+                InstructionType::PHA => {
+                    self.push_stack(self.acc);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::PLA => {
+                    self.acc = self.pull_stack();
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::PHP => {
+                    self.push_stack(self.status);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::PLP => {
+                    self.status = self.pull_stack();
+                    self.program_counter += bytes;
+                }
+
+                // endregion
 
                 InstructionType::JMP => {
                     self.jmp(&mode);
