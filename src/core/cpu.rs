@@ -1,14 +1,16 @@
-use std::ops::Add;
+
+use std::ops::Shl;
 
 use super::{bus::Bus, opcode::Opcode};
 
-const FLAG_ZERO:    u8 = 0b0000_0010;
-const FLAG_NEG:     u8 = 0b1000_0000;
-const FLAG_CARRY:   u8 = 0b0000_0001;
+const FLAG_CARRY:       u8 = 0b0000_0001;
+const FLAG_ZERO:        u8 = 0b0000_0010;
+const FLAG_OVERFLOW:    u8 = 0b0100_0000;
+const FLAG_NEG:         u8 = 0b1000_0000;
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InstructionType {
     ADC,
     AND,
@@ -68,7 +70,7 @@ pub enum InstructionType {
     TYA,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AddressingMode {
     Accumulator,
     Absolute,
@@ -200,17 +202,33 @@ impl Cpu {
         self.status &= !flag;
     }
 
-    fn sta(&mut self, mode: &AddressingMode) {
-        let address = self.get_memory_address(mode);
-
-        self.bus.mem_write(address, self.acc);
+    fn set_flag_value(&mut self, flag: u8, value: bool) {
+        if value {
+            self.set_flag(flag);
+        } else {
+            self.clear_flag(flag);
+        }
     }
 
-    fn lda(&mut self, mode: &AddressingMode) {
+    fn jmp(&mut self, mode: &AddressingMode) {
         let address = self.get_memory_address(mode);
 
-        self.acc = self.bus.mem_read(address);
-        self.update_zero_and_negative_flags(self.acc);
+        self.program_counter = address;
+    }
+
+    fn store(&mut self, value: u8, mode: &AddressingMode) {
+        let address = self.get_memory_address(mode);
+
+        self.bus.mem_write(address, value);
+    }
+
+    fn load(&mut self, mode: &AddressingMode) -> u8 {
+        let address = self.get_memory_address(mode);
+
+        let result = self.bus.mem_read(address);
+        self.update_zero_and_negative_flags(result);
+
+        result
     }
 
     fn and(&mut self, mode: &AddressingMode) {
@@ -230,8 +248,8 @@ impl Cpu {
     fn sbc(&mut self, mode: &AddressingMode) {
         let address = self.get_memory_address(mode);
 
-
-        self.acc = self.acc.wrapping_sub(self.bus.mem_read(address));
+        
+        self.acc = self.acc.wrapping_add(self.bus.mem_read(address));
 
         self.update_zero_and_negative_flags(self.acc);
     }
@@ -239,11 +257,52 @@ impl Cpu {
     fn adc(&mut self, mode: &AddressingMode) {
         let address = self.get_memory_address(mode);
 
-        print!("{} ", self.acc);
-        self.acc += self.bus.mem_read(address);
-        println!("{}", self.acc);
+        let (term, overflow) = self.bus.mem_read(address).overflowing_add(self.status & FLAG_CARRY);
+
+
+        let result = {
+            if self.status & FLAG_NEG != 0 {
+                self.acc.overflowing_add_signed(term as i8)
+            } else {
+                self.acc.overflowing_add(term)
+            }
+        };
+        
+        self.acc = result.0;
+        
+        if result.1 | overflow {
+            self.status |= FLAG_OVERFLOW;
+        } else {
+            self.status &= !FLAG_OVERFLOW;
+        }
+
         self.update_zero_and_negative_flags(self.acc);
     }
+
+    fn asl(&mut self, mode: &AddressingMode) {
+        
+        let (result, carry) = {
+            if *mode == AddressingMode::Accumulator {
+                let (result, carry) = self.acc.overflowing_shl(1);
+                
+                self.acc = result;
+
+                (result, carry)
+            } else {
+                let address = self.get_memory_address(mode);
+                let (result, carry) = self.bus.mem_read(address).overflowing_shl(1);
+
+                self.bus.mem_write(address, result);
+
+                (result, carry)
+            }
+
+        };
+
+        self.set_flag_value(FLAG_CARRY, carry);
+        self.update_zero_and_negative_flags(result);
+    }
+    
 
     pub fn load_program(&mut self, code: Vec<u8>) {
         for (idx, byte) in code.iter().enumerate() {
@@ -265,6 +324,16 @@ impl Cpu {
             self.program_counter += 1;
 
             match instr_type {
+                InstructionType::SBC => {
+                    self.sbc(&mode);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::ADC => {
+                    self.adc(&mode);
+                    self.program_counter += bytes;
+                }
+
                 InstructionType::ORA => {
                     self.ora(&mode);
                     self.program_counter += bytes;
@@ -272,6 +341,11 @@ impl Cpu {
 
                 InstructionType::AND => {
                     self.and(&mode);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::ASL => {
+                    self.asl(&mode);
                     self.program_counter += bytes;
                 }
                 
@@ -286,24 +360,51 @@ impl Cpu {
                 }
 
                 InstructionType::STA => {
-                    self.sta(&mode);
+                    self.store(self.acc, &mode);
                     self.program_counter += bytes;
                 }
 
                 InstructionType::LDA => {
-                    self.lda(&mode);
+                    self.acc = self.load(&mode);
                     self.program_counter += bytes;
                 }
 
-                InstructionType::SBC => {
-                    self.sbc(&mode);
+                InstructionType::STX => {
+                    self.store(self.reg_x, &mode);
                     self.program_counter += bytes;
                 }
 
+                InstructionType::LDX => {
+                    self.reg_x = self.load(&mode);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::STY => {
+                    self.store(self.reg_y, &mode);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::LDY => {
+                    self.reg_y = self.load(&mode);
+                    self.program_counter += bytes;
+                }
+
+                InstructionType::DEX => {
+                    self.reg_x = self.reg_x.wrapping_sub(1);
+
+                    self.update_zero_and_negative_flags(self.reg_x);
+                    self.program_counter += bytes;
+                }
+
+                
                 InstructionType::BNE => {
                     
                     self.branch(FLAG_ZERO, false);
                     self.program_counter += bytes;
+                }
+
+                InstructionType::JMP => {
+                    self.jmp(&mode);
                 }
 
                 InstructionType::NOP => continue,
