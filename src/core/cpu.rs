@@ -288,6 +288,15 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
         self.update_zero_and_negative_flags(self.acc);
     }
 
+    fn bit(&mut self, mode: &AddressingMode) {
+        let address = self.get_memory_address(mode);
+        let value = self.bus.mem_read(address);
+        self.set_flag_value(FLAG_NEG, value & FLAG_NEG != 0);
+        self.set_flag_value(FLAG_OVERFLOW, value & FLAG_OVERFLOW != 0);
+
+        self.set_flag_value(FLAG_ZERO, self.acc & value == 0);
+    }
+
     fn sbc(&mut self, mode: &AddressingMode) {
         let address = self.get_memory_address(mode);
 
@@ -472,6 +481,11 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
 
             InstructionType::AND => {
                 self.and(&mode);
+                self.program_counter += bytes;
+            }
+
+            InstructionType::BIT => {
+                self.bit(&mode);
                 self.program_counter += bytes;
             }
 
