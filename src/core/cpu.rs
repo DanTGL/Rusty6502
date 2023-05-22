@@ -281,6 +281,13 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
         self.update_zero_and_negative_flags(self.acc);
     }
 
+    fn eor(&mut self, mode: &AddressingMode) {
+        let address = self.get_memory_address(mode);
+
+        self.acc ^= self.bus.mem_read(address);
+        self.update_zero_and_negative_flags(self.acc);
+    }
+
     fn sbc(&mut self, mode: &AddressingMode) {
         let address = self.get_memory_address(mode);
 
@@ -339,6 +346,83 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
         self.update_zero_and_negative_flags(result);
     }
 
+    fn lsr(&mut self, mode: &AddressingMode) {
+        
+        let (result, carry) = {
+            if *mode == AddressingMode::Accumulator {
+                let (result, carry) = self.acc.overflowing_shr(1);
+                
+                self.acc = result;
+
+                (result, carry)
+            } else {
+                let address = self.get_memory_address(mode);
+                let (result, carry) = self.bus.mem_read(address).overflowing_shr(1);
+
+                self.bus.mem_write(address, result);
+
+                (result, carry)
+            }
+
+        };
+
+        self.set_flag_value(FLAG_CARRY, carry);
+        self.update_zero_and_negative_flags(result);
+    }
+
+    fn rol(&mut self, mode: &AddressingMode) {
+        
+        let (result, carry) = {
+            if *mode == AddressingMode::Accumulator {
+                let (value, carry) = self.acc.overflowing_shl(1);
+                
+                self.acc = value | self.status & FLAG_CARRY;
+
+                (self.acc, carry)
+            } else {
+                let address = self.get_memory_address(mode);
+                let (value, carry) = self.bus.mem_read(address).overflowing_shr(1);
+
+                let result = value | self.status & FLAG_CARRY;
+
+                self.bus.mem_write(address, result);
+
+                (result, carry)
+            }
+
+        };
+
+        self.set_flag_value(FLAG_CARRY, carry);
+        self.update_zero_and_negative_flags(result);
+    }
+
+    fn ror(&mut self, mode: &AddressingMode) {
+        
+        let (result, carry) = {
+            if *mode == AddressingMode::Accumulator {
+                let (value, carry) = self.acc.overflowing_shr(1);
+                
+                self.acc = value | (self.status & FLAG_CARRY) << 7;
+
+                (self.acc, carry)
+            } else {
+                let address = self.get_memory_address(mode);
+                let (value, carry) = self.bus.mem_read(address).overflowing_shr(1);
+
+                let result = value | (self.status & FLAG_CARRY) << 7;
+
+                self.bus.mem_write(address, result);
+
+                (result, carry)
+            }
+
+        };
+
+        self.set_flag_value(FLAG_CARRY, carry);
+        self.update_zero_and_negative_flags(result);
+    }
+
+
     fn cmp(&mut self, mode: &AddressingMode, value: u8) {
         let address = self.get_memory_address(mode);
         let operand = self.bus.mem_read(address);
@@ -381,15 +465,39 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
                 self.program_counter += bytes;
             }
 
+            InstructionType::EOR => {
+                self.eor(&mode);
+                self.program_counter += bytes;
+            }
+
             InstructionType::AND => {
                 self.and(&mode);
                 self.program_counter += bytes;
             }
 
+            // region: Shift & Rotate instructions
+
             InstructionType::ASL => {
                 self.asl(&mode);
                 self.program_counter += bytes;
             }
+
+            InstructionType::LSR => {
+                self.lsr(&mode);
+                self.program_counter += bytes;
+            }
+
+            InstructionType::ROL => {
+                self.rol(&mode);
+                self.program_counter += bytes;
+            }
+
+            InstructionType::ROR => {
+                self.ror(&mode);
+                self.program_counter += bytes;
+            }
+
+            // endregion
             
             // region: Flag instructions
 
@@ -420,6 +528,11 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
 
             InstructionType::SEI => {
                 self.set_flag(FLAG_INTERRUPT);
+                self.program_counter += bytes;
+            }
+
+            InstructionType::CLV => {
+                self.clear_flag(FLAG_OVERFLOW);
                 self.program_counter += bytes;
             }
 
@@ -667,7 +780,7 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
 
             InstructionType::NOP => self.program_counter += 1,
 
-            _ => unimplemented!("Opcode: 0x{:2X}", opcode)
+            //_ => unimplemented!("Opcode: 0x{:0>2X}", opcode)
         }
     }
 
