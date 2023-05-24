@@ -11,7 +11,9 @@ const FLAG_BREAK:       u8 = 0b0001_0000;
 const FLAG_OVERFLOW:    u8 = 0b0100_0000;
 const FLAG_NEG:         u8 = 0b1000_0000;
 
+const NMI_VECTOR:       u16 = 0xFFFA;
 const RESET_VECTOR:     u16 = 0xFFFC;
+const IRQ_VECTOR:       u16 = 0xFFFE;
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
@@ -442,6 +444,18 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
         self.update_zero_and_negative_flags(result);
     }
 
+    fn rti(&mut self) {
+        self.status = self.stack_pull();
+        self.program_counter = self.stack_pull_u16();
+    }
+
+    fn nmi(&mut self) {
+        self.stack_push_u16(self.program_counter);
+        self.stack_push(self.status);
+
+        self.program_counter = self.bus.mem_read_u16(NMI_VECTOR);
+        
+    }
 
     pub fn load_program(&mut self, code: Vec<u8>) {
         for (idx, byte) in code.iter().enumerate() {
@@ -600,7 +614,6 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
             }
 
             // endregion
-
 
             // region: Increment & Decrement instructions
             InstructionType::DEX => {
@@ -778,6 +791,8 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
 
             // endregion
 
+            // region: Jump instructions
+
             InstructionType::JMP => {
                 self.jmp(&mode);
             }
@@ -790,6 +805,17 @@ println!("{}, {}", rel, self.bus.mem_read(self.program_counter + 1));
 
             InstructionType::RTS => {
                 self.program_counter = self.stack_pull_u16() + 1;
+            }
+
+            // endregion
+
+            InstructionType::BRK => {
+                self.program_counter += 2;
+                self.nmi();
+            }
+
+            InstructionType::RTI => {
+                self.rti();
             }
 
             InstructionType::NOP => self.program_counter += 1,
