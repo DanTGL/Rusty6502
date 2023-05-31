@@ -1,4 +1,6 @@
 
+const OUTPUT_ADDR: u16 = 0x7FFF;
+
 pub struct Bus {
     pub(crate) memory: [u8; 0x10000],
 }
@@ -19,6 +21,10 @@ impl Bus {
     }
 
     pub fn mem_write(&mut self, address: u16, value: u8) {
-        self.memory[address as usize] = value;
+        match address {
+            OUTPUT_ADDR => println!("{}", value),
+            _ => self.memory[address as usize] = value
+        }
+        
     }
 }
